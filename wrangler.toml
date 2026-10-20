@@ -1,0 +1,16 @@
+# An assets-only Worker: no script runs, so every request is a free static
+# asset request with no daily cap. The GitHub workflow builds dist/ and
+# deploys it.
+name = "cookbook"
+compatibility_date = "2026-10-01"
+# One public address: the custom domain below.
+workers_dev = false
+preview_urls = false
+
+routes = [
+  { pattern = "cookbook.oldsalt.zone", custom_domain = true },
+]
+
+[assets]
+directory = "dist"
+not_found_handling = "404-page"

@@ -1,0 +1,16 @@
+{
+  "name": "cookbook",
+  "private": true,
+  "type": "module",
+  "description": "Merges open threat-intelligence blocklists into one list for SafeRoom and other DNS blockers.",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "node build/build.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.151.2"
+  }
+}

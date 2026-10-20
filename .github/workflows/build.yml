@@ -1,0 +1,41 @@
+name: build and publish
+
+on:
+  schedule:
+    # Every 6 hours, off the hour so it does not land with every other cron.
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["build/**", "sources.json", "allow.txt", "wrangler.toml", ".github/workflows/build.yml"]
+
+permissions:
+  contents: read
+
+# One build at a time; a newer run replaces a queued one.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build the list
+        run: npm run build
+      - name: Deploy to Cloudflare
+        # Only from main. A failed build above never reaches this step, so
+        # the published list stays the last good one.
+        if: github.ref == 'refs/heads/main'
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

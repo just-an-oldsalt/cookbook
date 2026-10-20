@@ -1,0 +1,74 @@
+{
+  "sources": [
+    {
+      "id": "cert-pl",
+      "name": "CERT Polska warning list",
+      "homepage": "https://cert.pl/en/warning-list/",
+      "url": "https://hole.cert.pl/domains/v2/domains.txt",
+      "format": "domains",
+      "license": "Free for any use, including commercial",
+      "licenseUrl": "https://cert.pl/en/warning-list/",
+      "enabled": true
+    },
+    {
+      "id": "spamhaus-drop",
+      "name": "Spamhaus DROP",
+      "homepage": "https://www.spamhaus.org/blocklists/do-not-route-or-peer/",
+      "url": "https://www.spamhaus.org/drop/drop.txt",
+      "format": "cidr",
+      "license": "Free with credit to Spamhaus; keep the date and (c) notice",
+      "licenseUrl": "https://www.spamhaus.org/blocklists/do-not-route-or-peer/",
+      "notice": "Spamhaus DROP (c) The Spamhaus Project SLU, https://www.spamhaus.org/drop/",
+      "keepHeader": true,
+      "enabled": true
+    },
+    {
+      "id": "blp-phishing",
+      "name": "The Block List Project: phishing",
+      "homepage": "https://github.com/blocklistproject/Lists",
+      "url": "https://blocklistproject.github.io/Lists/alt-version/phishing-nl.txt",
+      "format": "domains",
+      "license": "Unlicense",
+      "licenseUrl": "https://github.com/blocklistproject/Lists/blob/master/LICENSE",
+      "enabled": true
+    },
+    {
+      "id": "blp-ransomware",
+      "name": "The Block List Project: ransomware",
+      "homepage": "https://github.com/blocklistproject/Lists",
+      "url": "https://blocklistproject.github.io/Lists/alt-version/ransomware-nl.txt",
+      "format": "domains",
+      "license": "Unlicense",
+      "licenseUrl": "https://github.com/blocklistproject/Lists/blob/master/LICENSE",
+      "enabled": true
+    },
+    {
+      "id": "blp-scam",
+      "name": "The Block List Project: scam",
+      "homepage": "https://github.com/blocklistproject/Lists",
+      "url": "https://blocklistproject.github.io/Lists/alt-version/scam-nl.txt",
+      "format": "domains",
+      "license": "Unlicense",
+      "licenseUrl": "https://github.com/blocklistproject/Lists/blob/master/LICENSE",
+      "enabled": true
+    },
+    {
+      "id": "hagezi-tif",
+      "name": "HaGeZi Threat Intelligence Feeds",
+      "homepage": "https://github.com/hagezi/dns-blocklists",
+      "url": "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/tif-onlydomains.txt",
+      "format": "domains",
+      "license": "GPL-3.0 (would apply to the published list)",
+      "licenseUrl": "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE",
+      "enabled": false
+    }
+  ],
+  "popular": {
+    "name": "Tranco top sites (used only to remove popular domains; not republished)",
+    "homepage": "https://tranco-list.eu/",
+    "url": "https://tranco-list.eu/top-1m.csv.zip",
+    "license": "See the Tranco site; cite Le Pochat et al., NDSS 2019",
+    "licenseUrl": "https://tranco-list.eu/",
+    "top": 100000
+  }
+}

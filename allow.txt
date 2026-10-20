@@ -1,0 +1,10 @@
+# Names that cookbook never publishes, with everything under them.
+# Add a name here when a feed lists a legitimate site by mistake, and say why.
+#
+# Format: one domain per line. "#" starts a comment.
+
+# Certificate revocation and time services: blocking them breaks TLS checks.
+digicert.com
+letsencrypt.org
+lencr.org
+time.apple.com
