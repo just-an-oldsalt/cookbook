@@ -5,6 +5,7 @@
 // blocks DNS answers in that range.
 
 import { isIP } from "node:net";
+import { canonicalCIDR } from "./safety.ts";
 
 export type Format =
   | "domains" // one name per line
@@ -36,7 +37,7 @@ export function normalizeDomain(raw: string): string | null {
   if (name.startsWith("*.")) name = name.slice(2); // feeds mean "this and below"
   if (name.startsWith(".")) name = name.slice(1);
   if (name.endsWith(".")) name = name.slice(0, -1);
-  if (!name || name.length > 253 || isIP(name)) return null;
+  if (!name || name.length > 253 || name.includes("%")) return null;
   if (!/^[\x00-\x7f]*$/.test(name)) {
     try {
       name = new URL(`http://${name}/`).hostname; // converts to punycode
@@ -44,28 +45,32 @@ export function normalizeDomain(raw: string): string | null {
       return null;
     }
   }
+  // After the Unicode step: full-width digits become an IP address here.
+  if (isIP(name)) return null;
   const labels = name.split(".");
   // A single label would block a whole TLD; no feed means that.
   if (labels.length < 2) return null;
+  // No TLD is all digits; "127.1" and similar are IP shorthand.
+  if (/^\d+$/.test(labels[labels.length - 1])) return null;
   return labels.every((l) => LABEL.test(l)) ? name : null;
 }
 
 /** An IPv4 or IPv6 address or CIDR, in canonical text, or null. */
 export function normalizeCIDR(raw: string): string | null {
   const [address, prefixText, ...rest] = raw.trim().split("/");
-  if (rest.length) return null;
+  if (rest.length || address.includes("%")) return null; // no zone IDs
   const family = isIP(address);
   if (!family) return null;
   const max = family === 4 ? 32 : 128;
-  if (prefixText === undefined) return `${address.toLowerCase()}/${max}`;
-  if (!/^\d{1,3}$/.test(prefixText)) return null;
+  if (prefixText === undefined) return canonicalCIDR(`${address}/${max}`);
+  if (!/^(0|[1-9]\d{0,2})$/.test(prefixText)) return null; // no "/008"
   const prefix = Number(prefixText);
   if (prefix > max) return null;
   // Very short prefixes are a feed error, not a threat: /0 to /7 would
   // cover a sixteenth of the IPv4 internet or more.
   if (family === 4 && prefix < 8) return null;
-  if (family === 6 && prefix < 16) return null;
-  return `${address.toLowerCase()}/${prefix}`;
+  if (family === 6 && prefix < 24) return null;
+  return canonicalCIDR(`${address}/${prefix}`);
 }
 
 function stripComment(line: string): string {

@@ -53,7 +53,7 @@ export function renderIndex(stats: Stats, base: string): string {
   th { color: var(--muted); font-weight: 600; }
   .num { text-align: right; font-variant-numeric: tabular-nums; }
   .st { font-weight: 600; }
-  .st.fresh { color: var(--ok); } .st.fallback { color: var(--warn); } .st.failed { color: var(--bad); }
+  .st.fresh { color: var(--ok); } .st.fallback, .st.held { color: var(--warn); } .st.failed { color: var(--bad); }
   td small { color: var(--muted); display: block; }
   a { color: var(--accent); }
   .note { border-left: 3px solid var(--accent); padding: 4px 14px; color: var(--muted); }
@@ -69,7 +69,7 @@ export function renderIndex(stats: Stats, base: string): string {
     <div class="stat"><b>${n(stats.domains)}</b><small>domains</small></div>
     <div class="stat"><b>${n(stats.cidrs)}</b><small>address ranges</small></div>
     <div class="stat"><b>${n(stats.sources.length)}</b><small>sources</small></div>
-    <div class="stat"><b>${n(stats.removedPopular + stats.removedAllow)}</b><small>removed as popular or allowed</small></div>
+    <div class="stat"><b>${n(stats.removedPopular + stats.removedAllow + stats.removedProtected)}</b><small>left out for safety</small></div>
   </div>
 
   <h2>Files</h2>
@@ -78,7 +78,7 @@ export function renderIndex(stats: Stats, base: string): string {
     <li><a href="/list.txt.sha256">list.txt.sha256</a>: its SHA-256.</li>
     <li><a href="/stats.json">stats.json</a>: counts and the status of each source.</li>
     <li><a href="/attribution.txt">attribution.txt</a>: sources and their licenses.</li>
-    <li><a href="/removed-popular.txt">removed-popular.txt</a>: feed entries left out because they are popular sites.</li>
+    <li><a href="/removed.txt">removed.txt</a>: feed entries left out (popular sites, public suffixes, protected ranges), with the reason.</li>
     <li><code>/sources/&lt;id&gt;.txt</code>: each source on its own, normalized.</li>
   </ul>
 
@@ -98,7 +98,7 @@ export function renderIndex(stats: Stats, base: string): string {
 ${rows}
     </tbody>
   </table></div>
-  <p><small>fresh: downloaded this build. fallback: the download failed, so the last published copy was used. failed: no copy was available.</small></p>
+  <p><small>fresh: downloaded this build. held: the source changed size suddenly, so its previous copy is used for up to 48 hours. fallback: the download failed, so the last published copy was used. failed: no recent copy was available.</small></p>
 
   <footer>
     Source code: <a href="https://github.com/just-an-oldsalt/cookbook">github.com/just-an-oldsalt/cookbook</a>.

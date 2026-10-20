@@ -5,36 +5,75 @@ on:
     # Every 6 hours, off the hour so it does not land with every other cron.
     - cron: "17 */6 * * *"
   workflow_dispatch:
+    inputs:
+      allow_shrink:
+        description: "Publish even if the list shrinks by more than half (after removing a source on purpose)"
+        type: boolean
+        default: false
+      first_build:
+        description: "Build without the previous stats.json (only for the very first build)"
+        type: boolean
+        default: false
   push:
     branches: [main]
-    paths: ["build/**", "sources.json", "allow.txt", "wrangler.toml", ".github/workflows/build.yml"]
+    paths: ["build/**", "sources.json", "allow.txt", "wrangler.toml", "package-lock.json", ".github/workflows/build.yml"]
 
 permissions:
   contents: read
 
-# One build at a time; a newer run replaces a queued one.
 concurrency:
   group: publish
   cancel-in-progress: false
 
 jobs:
+  # Parses untrusted feed content. It has no secrets and installs no npm
+  # packages: the builder uses only Node's standard library.
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: node --test "test/**/*.test.ts"
+      - name: Build the list
+        run: node build/build.ts
+        env:
+          COOKBOOK_ALLOW_SHRINK: ${{ inputs.allow_shrink && '1' || '0' }}
+          COOKBOOK_FIRST_BUILD: ${{ inputs.first_build && '1' || '0' }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  # Holds the Cloudflare token. Runs only from main, in the production
+  # environment, which is restricted to the main branch. It runs no code from
+  # the feeds and no npm install scripts.
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
-      - run: npm test
-      - name: Build the list
-        run: npm run build
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
       - name: Deploy to Cloudflare
-        # Only from main. A failed build above never reaches this step, so
-        # the published list stays the last good one.
-        if: github.ref == 'refs/heads/main'
         run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

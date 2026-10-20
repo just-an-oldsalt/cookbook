@@ -69,6 +69,10 @@
     "url": "https://tranco-list.eu/top-1m.csv.zip",
     "license": "See the Tranco site; cite Le Pochat et al., NDSS 2019",
     "licenseUrl": "https://tranco-list.eu/",
-    "top": 100000
+    "top": 100000,
+    "topRegistrable": 10000
+  },
+  "suffixList": {
+    "url": "https://publicsuffix.org/list/public_suffix_list.dat"
   }
 }

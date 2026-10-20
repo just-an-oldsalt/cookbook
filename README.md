@@ -16,7 +16,7 @@ This list is for testing and for people who want a free starting point. It has n
 | `/list.txt.sha256` | The SHA-256 of `list.txt`. |
 | `/stats.json` | Counts, and the status of each source. |
 | `/attribution.txt` | Each source and its license. |
-| `/removed-popular.txt` | Feed entries left out because they are popular sites. |
+| `/removed.txt` | Feed entries left out for safety, each with the reason. |
 | `/sources/<id>.txt` | Each source on its own, normalized. |
 
 ## Sources
@@ -39,12 +39,17 @@ These feeds are not in the list:
 ## How a list is built
 
 1. The builder downloads each source and keeps the valid domains and address ranges.
-2. It removes every domain in the Tranco top 100,000. Feeds often keep legitimate sites that were compromised once. A listed subdomain of a hosting platform, such as `bad.pages.dev`, stays in the list.
+2. It leaves out every entry that could break the web for everyone who uses the list. Each one goes to `removed.txt` with the reason:
+   - A public suffix from the [Public Suffix List](https://publicsuffix.org/), for example `co.uk`, `github.io`, or `s3.amazonaws.com`. Nobody owns these names, and one of them would block every site under it.
+   - A site in the Tranco top 100,000.
+   - A name under a site in the Tranco top 10,000, for example `www.google.com`. Customer sites under known hosting platforms, for example `bad.weebly.com`, stay in the list. The platforms are in `HOSTING_PLATFORMS` in `build/safety.ts`.
+   - A shared service apex, or a parent of one, for example `cloudfront.net` or `amazonaws.com`. Customer names under them stay.
+   - An address range that overlaps private space, a public DNS resolver, or the core ranges of Apple, Cloudflare, Google, Akamai, or Fastly.
 3. It removes the names in [allow.txt](allow.txt) and the SafeRoom never-block names (Apple, Jamf, Okta), with all names under them.
 4. It drops each domain whose parent is also listed. `a.evil.com` adds nothing when `evil.com` is listed.
-5. It refuses to publish a list with less than half the entries of the last list. The last list then stays online.
+5. It refuses to publish a list with less than half the entries of the last list. The last list then stays online. To publish a smaller list on purpose, run the workflow by hand with "allow shrink".
 
-If one source fails, or loses more than half of its entries, the builder uses the last published copy of that source.
+If a source fails, its last published copy is used for up to 48 hours. If a source suddenly halves or more than doubles, its previous copy is held for up to 48 hours. A sudden change is more often a broken or compromised feed than a real one. After 48 hours, the new data is used, so a real change is delayed but never blocked. Each fallback or hold shows as a warning on the workflow run and on the index page.
 
 ## Build it yourself
 
@@ -56,7 +61,13 @@ npm test
 npm run build   # writes dist/
 ```
 
-The workflow in `.github/workflows/build.yml` runs the build every 6 hours and deploys `dist/` as static assets on Cloudflare Workers. Static asset requests are free and have no daily limit. The workflow needs the repository secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+The workflow in `.github/workflows/build.yml` runs the build every 6 hours and deploys `dist/` as static assets on Cloudflare Workers. Static asset requests are free and have no daily limit.
+
+The workflow has two jobs. The build job reads the feeds. It has no secrets and installs no packages. The deploy job holds the Cloudflare token. It runs only from `main`, in the `production` environment, with npm install scripts turned off. Each action is pinned to a commit SHA.
+
+The `production` environment needs two secrets: `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. Give the token the smallest scope that deploys: a custom token with "Workers Scripts: Edit" on the account and "Workers Routes: Edit" on the zone, with an expiry date. The "Edit Cloudflare Workers" template also grants KV, R2, and Pages, which the deploy does not need.
+
+For the first build of a new site, run the workflow by hand with "first build". Every later build needs the published `stats.json`, because the safety rules compare against it.
 
 ## License
 
