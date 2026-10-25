@@ -1,8 +1,11 @@
-# An assets-only Worker: no script runs, so every request is a free static
-# asset request with no daily cap. Workers Builds builds dist/ and
-# deploys it.
+# The cookbook Worker (src/worker.ts). Its cron trigger builds the list into
+# the R2 bucket, and its fetch handler serves the files from there. Workers
+# Builds deploys it on each push to main.
 name = "cookbook"
+main = "src/worker.ts"
 compatibility_date = "2026-10-01"
+# parse.ts and safety.ts use isIP from node:net.
+compatibility_flags = ["nodejs_compat"]
 # One public address: the custom domain below.
 workers_dev = false
 preview_urls = false
@@ -11,6 +14,26 @@ routes = [
   { pattern = "cookbook.oldsalt.zone", custom_domain = true },
 ]
 
-[assets]
-directory = "dist"
-not_found_handling = "404-page"
+[vars]
+BASE = "https://cookbook.oldsalt.zone"
+
+[[r2_buckets]]
+binding = "LIST"
+bucket_name = "cookbook"
+
+[triggers]
+# Every 6 hours, off the hour so it does not land with every other cron.
+crons = ["17 */6 * * *"]
+
+[limits]
+# A build takes about 2 seconds of CPU. This stops a runaway build early.
+cpu_ms = 60_000
+
+[observability]
+enabled = true
+
+# allow.txt is bundled as text.
+[[rules]]
+type = "Text"
+globs = ["**/*.txt"]
+fallthrough = true

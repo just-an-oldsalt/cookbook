@@ -4,9 +4,12 @@
   "type": "module",
   "description": "Merges open threat-intelligence blocklists into one list for SafeRoom and other DNS blockers.",
   "license": "Apache-2.0",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "build": "node build/build.ts",
+    "build": "node build/cli.ts",
+    "publish": "node build/cli.ts --publish",
     "test": "node --test \"test/**/*.test.ts\"",
     "deploy": "wrangler deploy"
   },

@@ -34,7 +34,7 @@ These feeds are not in the list:
 - URLhaus and ThreatFox (abuse.ch). The current abuse.ch terms do not allow derivative works without consent.
 - OpenPhish and Phishing Army. The OpenPhish terms forbid redistribution, and Phishing Army includes OpenPhish data.
 - HaGeZi Threat Intelligence Feeds. Its GPL-3.0 license would apply to the whole published list. It is in `sources.json`, but turned off.
-- The Block List Project malware list. Its 2.6 million entries would make the file larger than the 25 MiB limit for one file.
+- The Block List Project malware list. Its 2.6 million entries were over the 25 MiB file limit of the old static-asset hosting. R2 has no such limit, so this list can be added later.
 
 ## How a list is built
 
@@ -49,7 +49,7 @@ These feeds are not in the list:
 4. It drops each domain whose parent is also listed. `a.evil.com` adds nothing when `evil.com` is listed.
 5. It refuses to publish a list with less than half the entries of the last list. The last list then stays online. To publish a smaller list on purpose, see [Manual builds](#manual-builds).
 
-If a source fails, its last published copy is used for up to 48 hours. If a source suddenly halves or more than doubles, its previous copy is held for up to 48 hours. A sudden change is more often a broken or compromised feed than a real one. After 48 hours, the new data is used, so a real change is delayed but never blocked. Each fallback or hold shows as a warning in the build log and on the index page.
+If a source fails, its last published copy is used for up to 48 hours. If a source suddenly halves or more than doubles, its previous copy is held for up to 48 hours. A sudden change is more often a broken or compromised feed than a real one. After 48 hours, the new data is used, so a real change is delayed but never blocked. Each fallback or hold shows as a warning in the Worker logs and on the index page.
 
 ## Build it yourself
 
@@ -61,38 +61,30 @@ npm test
 npm run build   # writes dist/
 ```
 
+`npm run build` reads the previous build from the live site, because the guards compare against it. It writes the files to `dist/` and publishes nothing.
+
 ## How the list is published
 
-Two Workers run the site. Both are on the Cloudflare free plan.
+One Worker, `cookbook` in `src/worker.ts`, does all the work. It runs on the Cloudflare Workers Paid plan.
 
-The `cookbook` Worker serves `dist/` as static assets. Static asset requests are free and have no daily limit. Workers Builds builds and deploys it from this repository. Workers Builds is the build service of Cloudflare. It runs a build on each push to `main` and each time its deploy hook gets a POST request. A deploy hook is a URL that starts a build. Workers Builds makes its own deploy token, so the repository holds no Cloudflare secrets.
+- Its cron trigger runs the build every 6 hours. The build stores the files in the R2 bucket `cookbook`. A build takes about 2 seconds of CPU time.
+- Its fetch handler serves the files from the bucket at `cookbook.oldsalt.zone`.
 
-The `cookbook-cron` Worker in `cron/` calls the deploy hook every 6 hours. The call takes almost no CPU time, so it fits in the 10 ms limit of the free plan.
+The Worker reads and writes the bucket through its binding, so no API token is needed. The builder in `build/core.ts` uses only web-standard APIs, so the Worker and `npm run build` run the same code.
 
-The build settings of the `cookbook` Worker are in the Cloudflare dashboard, under Workers & Pages, cookbook, Settings, Build:
-
-| Setting | Value |
-|---|---|
-| Build command | `npm ci --ignore-scripts && npm test && npm run build` |
-| Deploy command | `npx wrangler deploy` |
-| Build variable | `SKIP_DEPENDENCY_INSTALL` = `1` |
-| Build watch paths | include `*`, exclude `cron/*` |
-
-The build variable turns off the automatic `npm install`, so the build command can install with npm install scripts turned off. The builder itself uses only the Node standard library. The build and the deploy run in one container. The builder reads the feeds as text and never runs them.
-
-To set up the cron Worker, do these steps once, with Wrangler logged in to the account:
-
-1. In the dashboard, create a deploy hook for the `main` branch under Settings, Build, Deploy Hooks.
-2. Run `npx wrangler secret put DEPLOY_HOOK_URL --config cron/wrangler.toml` and paste the hook URL.
-3. Run `npx wrangler deploy --config cron/wrangler.toml`.
+A list update changes only the files in the bucket. It never deploys the Worker. A code change deploys the Worker through Workers Builds, on each push to `main`. Workers Builds runs `npm ci --ignore-scripts && npm test` and then `npx wrangler deploy`, with the build variable `SKIP_DEPENDENCY_INSTALL` = `1`. These settings are in the Cloudflare dashboard, under Workers & Pages, cookbook, Settings, Build.
 
 ### Manual builds
 
-To start a build now, select Retry build on the latest build in the dashboard, or send a POST request to the deploy hook.
+The scheduled build refuses to publish when the guards fail. To publish from your own machine, log in with `npx wrangler login`, then run one of these commands:
 
-To publish a list with less than half the entries of the last list, add the build variable `COOKBOOK_ALLOW_SHRINK` = `1`, start a build, and then remove the variable.
+```sh
+npm run publish                            # build and upload to the bucket
+node build/cli.ts --publish --allow-shrink # publish a list with less than half the entries of the last list
+node build/cli.ts --publish --first-build  # the first build of a new bucket, without a previous stats.json
+```
 
-For the first build of a new site, add the build variable `COOKBOOK_FIRST_BUILD` = `1`, start a build, and then remove the variable. Every later build needs the published `stats.json`, because the safety rules compare against it.
+To test a change to the Worker, run `npx wrangler dev --test-scheduled`, then open `http://localhost:8787/__scheduled`. The local run uses a local copy of the bucket. Upload `stats.json` and `sources/` into it first with `npx wrangler r2 object put --local`.
 
 ## License
 

@@ -1,19 +1,8 @@
-// Builds the merged list into dist/.
-//
-//   node build/build.ts
-//
-// Environment:
-//   COOKBOOK_URL          where the current list is published; used for the
-//                         previous stats and for per-source fallbacks
-//                         (default https://cookbook.oldsalt.zone)
-//   COOKBOOK_ALLOW_SHRINK set to 1 to publish even if the list shrinks by
-//                         more than half (after a deliberate source removal)
+// Builds the merged list. Uses only web-standard APIs (fetch, streams,
+// crypto.subtle), so the same code runs in the Worker (src/worker.ts) and in
+// Node (build/cli.ts). The caller supplies the previous build and stores the
+// files this returns.
 
-import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { type Format, collapseSubdomains, isUnder, normalizeDomain, parse } from "./parse.ts";
 import { CRITICAL_NAMES, HOSTING_PLATFORMS, isPublicSuffix, overlapsProtected, parseSuffixList, registrableDomain } from "./safety.ts";
 import { renderIndex } from "./page.ts";
@@ -33,7 +22,7 @@ interface Source {
   enabled: boolean;
 }
 
-interface Config {
+export interface Config {
   sources: Source[];
   popular: {
     name: string; homepage: string; url: string; license: string; licenseUrl: string;
@@ -72,14 +61,37 @@ export interface Stats {
   sources: SourceStats[];
 }
 
-const ROOT = new URL("..", import.meta.url).pathname;
-const DIST = join(ROOT, "dist");
-const BASE = (process.env.COOKBOOK_URL ?? "https://cookbook.oldsalt.zone").replace(/\/$/, "");
-const UA = `cookbook-builder (+${BASE})`;
+export interface BuildInput {
+  config: Config;
+  /** The text of allow.txt. */
+  allow: string;
+  /**
+   * The published stats. Required: without them every guard below compares
+   * against zero and is off. Undefined only for the very first build.
+   */
+  previous: Stats | undefined;
+  /** The published copy of one source, or null if there is none. */
+  previousSource: (id: string) => Promise<string | null>;
+  /** Publish even if the list shrinks by more than half (after a deliberate source removal). */
+  allowShrink: boolean;
+  /** Where the list is published, for the list header and the index page. */
+  base: string;
+}
+
+export interface BuildOutput {
+  /**
+   * Published path and content, in the order to store them: list.txt and
+   * its checksum come after the files they describe, so a reader never sees
+   * a checksum for a list that is not there yet.
+   */
+  files: [string, string][];
+  stats: Stats;
+}
+
 const MAX_BYTES = 100 << 20;
 /** One source may not publish more than this. */
 const MAX_SOURCE_ENTRIES = 1_500_000;
-/** Cloudflare serves static files up to 25 MiB. */
+/** A sanity limit. It began as the 25 MiB file limit of Workers static assets; R2 has no such limit. */
 const MAX_LIST_BYTES = 24 << 20;
 /** A fallback copy older than this is not reused. */
 const MAX_FALLBACK_AGE_MS = 48 * 3600 * 1000;
@@ -95,60 +107,105 @@ const NEVER_BLOCK = [
   "jamf.com", "jamfcloud.com", "okta.com", "oktacdn.com", "okta-emea.com", "oktapreview.com",
 ];
 
-async function download(url: string): Promise<Buffer> {
+async function fetchOK(url: string, base: string): Promise<Response> {
   const response = await fetch(url, {
-    headers: { "user-agent": UA },
+    headers: { "user-agent": `cookbook-builder (+${base})` },
     signal: AbortSignal.timeout(120_000),
     redirect: "follow",
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  // Stream and stop at the limit, so a huge or endless body cannot exhaust
-  // the runner's memory.
-  const chunks: Buffer[] = [];
+  return response;
+}
+
+/** Wraps a byte stream so it errors past the limit: a huge or endless body cannot exhaust memory. */
+function limited(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
   let size = 0;
-  for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
-    size += chunk.length;
-    if (size > MAX_BYTES) throw new Error(`over ${MAX_BYTES} bytes`);
-    chunks.push(Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
+  return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      size += chunk.length;
+      if (size > MAX_BYTES) controller.error(new Error(`over ${MAX_BYTES} bytes`));
+      else controller.enqueue(chunk);
+    },
+  }));
+}
+
+async function downloadText(url: string, base: string): Promise<string> {
+  const response = await fetchOK(url, base);
+  return new Response(limited(response.body!)).text();
 }
 
 /**
- * The published stats. Required: without them every guard below compares
- * against zero and is off. Set COOKBOOK_FIRST_BUILD=1 for the very first
- * build only.
+ * The bytes after a zip's first local file header, inflated. Tranco ships one
+ * CSV per zip, stored with deflate.
  */
-async function previousStats(): Promise<Stats | undefined> {
-  if (process.env.COOKBOOK_FIRST_BUILD === "1") return undefined;
-  try {
-    return JSON.parse((await download(`${BASE}/stats.json`)).toString("utf8")) as Stats;
-  } catch (error) {
-    throw new Error(`cannot read the previous stats.json (${(error as Error).message}); refusing to build without the guards. Set COOKBOOK_FIRST_BUILD=1 only for a first build.`);
+async function unzipFirst(body: ReadableStream<Uint8Array>): Promise<ReadableStream<Uint8Array>> {
+  const reader = body.getReader();
+  let head = new Uint8Array(0);
+  const need = (n: number) => head.length >= n;
+  while (!need(30) || !need(30 + u16(head, 26) + u16(head, 28))) {
+    const { done, value } = await reader.read();
+    if (done) throw new Error("zip ends inside its header");
+    const next = new Uint8Array(head.length + value.length);
+    next.set(head);
+    next.set(value, head.length);
+    head = next;
   }
+  if (u16(head, 0) !== 0x4b50 || u16(head, 2) !== 0x0403) throw new Error("not a zip local file header");
+  if (u16(head, 8) !== 8) throw new Error(`zip compression method ${u16(head, 8)}, expected deflate`);
+  const rest = head.subarray(30 + u16(head, 26) + u16(head, 28));
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      if (rest.length) controller.enqueue(rest);
+    },
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  return stream.pipeThrough(new DecompressionStream("deflate-raw"));
 }
 
-/** Popular domains in rank order, from a CSV of "rank,domain". */
-async function popularDomains(config: Config["popular"]): Promise<string[]> {
-  let body = await download(config.url);
-  if (body.subarray(0, 2).toString("latin1") === "PK") {
-    // A zip with one CSV inside. The runner and macOS both have unzip.
-    const zip = join(tmpdir(), `popular-${process.pid}.zip`);
-    writeFileSync(zip, body);
-    body = execFileSync("unzip", ["-p", zip], { maxBuffer: MAX_BYTES });
-    rmSync(zip);
-  }
+function u16(bytes: Uint8Array, at: number): number {
+  return bytes[at] | (bytes[at + 1] << 8);
+}
+
+/**
+ * Popular domains in rank order, from a CSV of "rank,domain", plain or
+ * zipped. Reads only as many lines as it needs, so the full million-line list
+ * is never held in memory.
+ */
+async function popularDomains(config: Config["popular"], base: string): Promise<string[]> {
+  const response = await fetchOK(config.url, base);
+  let bytes = limited(response.body!);
+  if (new URL(config.url).pathname.endsWith(".zip")) bytes = await unzipFirst(bytes);
+  const reader = bytes.pipeThrough(new TextDecoderStream()).getReader();
   const out: string[] = [];
-  for (const line of body.toString("utf8").split(/\r?\n/)) {
-    const domain = normalizeDomain(line.split(",")[1] ?? "");
-    if (domain) out.push(domain);
-    if (out.length >= config.top) break;
+  let partial = "";
+  try {
+    while (out.length < config.top) {
+      const { done, value } = await reader.read();
+      const text = partial + (value ?? "");
+      const lines = text.split(/\r?\n/);
+      partial = done ? "" : lines.pop()!;
+      for (const line of lines) {
+        const domain = normalizeDomain(line.split(",")[1] ?? "");
+        if (domain) out.push(domain);
+        if (out.length >= config.top) break;
+      }
+      if (done) break;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
   }
   if (out.length < config.top / 2) throw new Error(`popular list has only ${out.length} names`);
   return out;
 }
 
-async function loadSource(source: Source, previous?: SourceStats) {
+async function loadSource(source: Source, input: BuildInput, previous?: SourceStats) {
   const stats: SourceStats = {
     id: source.id, name: source.name, homepage: source.homepage,
     license: source.license, licenseUrl: source.licenseUrl,
@@ -157,10 +214,10 @@ async function loadSource(source: Source, previous?: SourceStats) {
   let parsed;
   let header: string[] = [];
   try {
-    const text = (await download(source.url)).toString("utf8");
+    const text = await downloadText(source.url, input.base);
     parsed = parse(text, source.format);
     if (source.keepHeader) {
-      header = text.split(/\r?\n/).slice(0, 20)
+      header = text.split(/\r?\n/, 20)
         .filter((l) => /^[;#]/.test(l)).map((l) => l.replace(/^[;#]\s?/, ""));
     }
     const count = parsed.domains.size + parsed.cidrs.size;
@@ -188,18 +245,17 @@ async function loadSource(source: Source, previous?: SourceStats) {
     }
     stats.fetchedAt = previous!.fetchedAt;
     warn(`${source.id}: ${stats.detail}`);
-    try {
-      // Published copies are already normalized, in SafeRoom format.
-      const text = (await download(`${BASE}/sources/${source.id}.txt`)).toString("utf8");
-      // Our published copy starts with our own two lines, then the source's header.
-      if (source.keepHeader) header = text.split("\n").filter((l) => l.startsWith("# ")).slice(2).map((l) => l.slice(2));
-      const domains = parse(text, "domains");
-      const cidrs = parse(text, "cidr");
-      parsed = { domains: domains.domains, cidrs: cidrs.cidrs, invalid: 0 };
-    } catch {
+    // Published copies are already normalized, in SafeRoom format.
+    const text = await input.previousSource(source.id).catch(() => null);
+    if (text === null) {
       stats.status = "failed";
       return { stats, header, domains: new Set<string>(), cidrs: new Set<string>() };
     }
+    // Our published copy starts with our own two lines, then the source's header.
+    if (source.keepHeader) header = text.split("\n").filter((l) => l.startsWith("# ")).slice(2).map((l) => l.slice(2));
+    const domains = parse(text, "domains");
+    const cidrs = parse(text, "cidr");
+    parsed = { domains: domains.domains, cidrs: cidrs.cidrs, invalid: 0 };
   }
   stats.domains = parsed.domains.size;
   stats.cidrs = parsed.cidrs.size;
@@ -217,18 +273,15 @@ function lines(header: string[], entries: Iterable<string>): string {
   return [...header.map((h) => `# ${h}`), ...entries, ""].join("\n");
 }
 
-async function main() {
-  const config = JSON.parse(readFileSync(join(ROOT, "sources.json"), "utf8")) as Config;
-  const allow = parse(readFileSync(join(ROOT, "allow.txt"), "utf8"), "domains").domains;
-  const previous = await previousStats();
+export async function buildList(input: BuildInput): Promise<BuildOutput> {
+  const { config, previous, base } = input;
+  const allow = parse(input.allow, "domains").domains;
   const builtAt = new Date().toISOString();
-
-  rmSync(DIST, { recursive: true, force: true });
-  mkdirSync(join(DIST, "sources"), { recursive: true });
+  const files: [string, string][] = [];
 
   const enabled = config.sources.filter((s) => s.enabled);
   const results = await Promise.all(
-    enabled.map((s) => loadSource(s, previous?.sources.find((p) => p.id === s.id))),
+    enabled.map((s) => loadSource(s, input, previous?.sources.find((p) => p.id === s.id))),
   );
 
   const domains = new Set<string>();
@@ -238,19 +291,19 @@ async function main() {
     r.domains.forEach((d) => domains.add(d));
     r.cidrs.forEach((c) => cidrs.add(c));
     if (r.stats.status !== "failed") {
-      writeFileSync(
-        join(DIST, "sources", `${id}.txt`),
+      files.push([
+        `sources/${id}.txt`,
         lines([`${enabled[i].name}, normalized by cookbook, ${builtAt}`, `License: ${enabled[i].license} ${enabled[i].licenseUrl}`, ...r.header],
           [...[...r.domains].sort(), ...[...r.cidrs].sort()]),
-      );
+      ]);
     }
     console.log(`${id}: ${r.stats.status} ${r.stats.domains} domains ${r.stats.cidrs} cidrs${r.stats.detail ? ` (${r.stats.detail})` : ""}`);
   }
 
-  const ranked = await popularDomains(config.popular);
+  const ranked = await popularDomains(config.popular, base);
   const popular = new Set(ranked);
   const topRegistrable = new Set(ranked.slice(0, config.popular.topRegistrable));
-  const psl = parseSuffixList((await download(config.suffixList.url)).toString("utf8"));
+  const psl = parseSuffixList(await downloadText(config.suffixList.url, base));
   if (psl.rules.size < 5000) throw new Error(`public suffix list has only ${psl.rules.size} rules`);
 
   // Each removal is published in removed.txt with its reason.
@@ -307,43 +360,41 @@ async function main() {
   const finalCIDRs = [...cidrs].sort();
   const total = finalDomains.length + finalCIDRs.length;
   const previousTotal = (previous?.domains ?? 0) + (previous?.cidrs ?? 0);
-  if (previousTotal > 0 && total < previousTotal / 2 && process.env.COOKBOOK_ALLOW_SHRINK !== "1") {
-    throw new Error(`refusing to publish: ${total} entries, previously ${previousTotal}. Run the workflow by hand with "allow shrink" if this is intended.`);
+  if (previousTotal > 0 && total < previousTotal / 2 && !input.allowShrink) {
+    throw new Error(`refusing to publish: ${total} entries, previously ${previousTotal}. Publish with "allow shrink" if this is intended (see the README).`);
   }
 
   const list = lines(
     [
       "cookbook: merged open threat-intelligence blocklist",
       `Built ${builtAt} from ${enabled.length} sources. ${finalDomains.length} domains, ${finalCIDRs.length} address ranges.`,
-      `Format: SafeRoom list format. Sources and licenses: ${BASE}/attribution.txt`,
+      `Format: SafeRoom list format. Sources and licenses: ${base}/attribution.txt`,
       "For testing. No warranty: check entries before you rely on them.",
       ...enabled.flatMap((s) => (s.notice ? [`Includes ${s.notice}`] : [])),
     ],
     [...finalDomains, ...finalCIDRs],
   );
-  if (Buffer.byteLength(list) > MAX_LIST_BYTES) {
-    throw new Error(`list is ${Buffer.byteLength(list)} bytes, over the ${MAX_LIST_BYTES}-byte limit`);
+  const listBytes = new TextEncoder().encode(list);
+  if (listBytes.length > MAX_LIST_BYTES) {
+    throw new Error(`list is ${listBytes.length} bytes, over the ${MAX_LIST_BYTES}-byte limit`);
   }
-  const sha256 = createHash("sha256").update(list).digest("hex");
+  const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", listBytes))]
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
   const stats: Stats = {
     builtAt, domains: finalDomains.length, cidrs: finalCIDRs.length,
     removedPopular, removedAllow, removedProtected, collapsed: domains.size - finalDomains.length,
     sha256, sources: results.map((r) => r.stats),
   };
 
-  writeFileSync(join(DIST, "list.txt"), list);
-  writeFileSync(join(DIST, "list.txt.sha256"), `${sha256}  list.txt\n`);
-  writeFileSync(join(DIST, "stats.json"), JSON.stringify(stats, null, 2) + "\n");
-  writeFileSync(join(DIST, "attribution.txt"), attribution(enabled, config.popular));
+  files.push(["attribution.txt", attribution(enabled, config.popular)]);
   // Transparency: every feed entry that was left out, with the reason.
-  writeFileSync(
-    join(DIST, "removed.txt"),
-    lines([`Feed entries left out of list.txt, with the reason. ${builtAt}`], removed.sort()),
-  );
-  writeFileSync(join(DIST, "index.html"), renderIndex(stats, BASE));
-  writeFileSync(join(DIST, "404.html"), "<!doctype html><title>Not found</title><p>Not found. The list is at <a href=\"/list.txt\">/list.txt</a>.</p>\n");
-  writeFileSync(join(DIST, "_headers"), HEADERS);
-  console.log(`published ${finalDomains.length} domains, ${finalCIDRs.length} cidrs; removed ${removedPopular} popular, ${removedAllow} allowlisted; sha256 ${sha256}`);
+  files.push(["removed.txt", lines([`Feed entries left out of list.txt, with the reason. ${builtAt}`], removed.sort())]);
+  files.push(["list.txt", list]);
+  files.push(["list.txt.sha256", `${sha256}  list.txt\n`]);
+  files.push(["stats.json", JSON.stringify(stats, null, 2) + "\n"]);
+  files.push(["index.html", renderIndex(stats, base)]);
+  console.log(`built ${finalDomains.length} domains, ${finalCIDRs.length} cidrs; removed ${removedPopular} popular, ${removedAllow} allowlisted; sha256 ${sha256}`);
+  return { files, stats };
 }
 
 function attribution(sources: Source[], popular: Config["popular"]): string {
@@ -357,28 +408,3 @@ function attribution(sources: Source[], popular: Config["popular"]): string {
   ];
   return parts.join("\n");
 }
-
-const HEADERS = `/*
-  X-Content-Type-Options: nosniff
-  Strict-Transport-Security: max-age=31536000
-  Access-Control-Allow-Origin: *
-
-/
-  Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
-
-/index.html
-  Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
-
-/*.txt
-  Content-Type: text/plain; charset=utf-8
-  Cache-Control: public, max-age=300
-
-/*.sha256
-  Content-Type: text/plain; charset=utf-8
-  Cache-Control: public, max-age=300
-
-/stats.json
-  Cache-Control: public, max-age=300
-`;
-
-await main();

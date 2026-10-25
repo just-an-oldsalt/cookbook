@@ -1,7 +1,7 @@
 // The index page: what the list is, how to use it, and where each part
 // comes from. Generated at each build, so the numbers are always current.
 
-import type { Stats } from "./build.ts";
+import type { Stats } from "./core.ts";
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
