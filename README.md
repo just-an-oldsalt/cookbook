@@ -76,6 +76,7 @@ The build settings of the `cookbook` Worker are in the Cloudflare dashboard, und
 | Build command | `npm ci --ignore-scripts && npm test && npm run build` |
 | Deploy command | `npx wrangler deploy` |
 | Build variable | `SKIP_DEPENDENCY_INSTALL` = `1` |
+| Build watch paths | include `*`, exclude `cron/*` |
 
 The build variable turns off the automatic `npm install`, so the build command can install with npm install scripts turned off. The builder itself uses only the Node standard library. The build and the deploy run in one container. The builder reads the feeds as text and never runs them.
 
