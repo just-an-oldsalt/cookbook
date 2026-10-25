@@ -47,9 +47,9 @@ These feeds are not in the list:
    - An address range that overlaps private space, a public DNS resolver, or the core ranges of Apple, Cloudflare, Google, Akamai, or Fastly.
 3. It removes the names in [allow.txt](allow.txt) and the SafeRoom never-block names (Apple, Jamf, Okta), with all names under them.
 4. It drops each domain whose parent is also listed. `a.evil.com` adds nothing when `evil.com` is listed.
-5. It refuses to publish a list with less than half the entries of the last list. The last list then stays online. To publish a smaller list on purpose, run the workflow by hand with "allow shrink".
+5. It refuses to publish a list with less than half the entries of the last list. The last list then stays online. To publish a smaller list on purpose, see [Manual builds](#manual-builds).
 
-If a source fails, its last published copy is used for up to 48 hours. If a source suddenly halves or more than doubles, its previous copy is held for up to 48 hours. A sudden change is more often a broken or compromised feed than a real one. After 48 hours, the new data is used, so a real change is delayed but never blocked. Each fallback or hold shows as a warning on the workflow run and on the index page.
+If a source fails, its last published copy is used for up to 48 hours. If a source suddenly halves or more than doubles, its previous copy is held for up to 48 hours. A sudden change is more often a broken or compromised feed than a real one. After 48 hours, the new data is used, so a real change is delayed but never blocked. Each fallback or hold shows as a warning in the build log and on the index page.
 
 ## Build it yourself
 
@@ -61,13 +61,37 @@ npm test
 npm run build   # writes dist/
 ```
 
-The workflow in `.github/workflows/build.yml` runs the build every 6 hours and deploys `dist/` as static assets on Cloudflare Workers. Static asset requests are free and have no daily limit.
+## How the list is published
 
-The workflow has two jobs. The build job reads the feeds. It has no secrets and installs no packages. The deploy job holds the Cloudflare token. It runs only from `main`, in the `production` environment, with npm install scripts turned off. Each action is pinned to a commit SHA.
+Two Workers run the site. Both are on the Cloudflare free plan.
 
-The `production` environment needs two secrets: `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. Give the token the smallest scope that deploys: a custom token with "Workers Scripts: Edit" on the account and "Workers Routes: Edit" on the zone, with an expiry date. The "Edit Cloudflare Workers" template also grants KV, R2, and Pages, which the deploy does not need.
+The `cookbook` Worker serves `dist/` as static assets. Static asset requests are free and have no daily limit. Workers Builds builds and deploys it from this repository. Workers Builds is the build service of Cloudflare. It runs a build on each push to `main` and each time its deploy hook gets a POST request. A deploy hook is a URL that starts a build. Workers Builds makes its own deploy token, so the repository holds no Cloudflare secrets.
 
-For the first build of a new site, run the workflow by hand with "first build". Every later build needs the published `stats.json`, because the safety rules compare against it.
+The `cookbook-cron` Worker in `cron/` calls the deploy hook every 6 hours. The call takes almost no CPU time, so it fits in the 10 ms limit of the free plan.
+
+The build settings of the `cookbook` Worker are in the Cloudflare dashboard, under Workers & Pages, cookbook, Settings, Build:
+
+| Setting | Value |
+|---|---|
+| Build command | `npm ci --ignore-scripts && npm test && npm run build` |
+| Deploy command | `npx wrangler deploy` |
+| Build variable | `SKIP_DEPENDENCY_INSTALL` = `1` |
+
+The build variable turns off the automatic `npm install`, so the build command can install with npm install scripts turned off. The builder itself uses only the Node standard library. The build and the deploy run in one container. The builder reads the feeds as text and never runs them.
+
+To set up the cron Worker, do these steps once, with Wrangler logged in to the account:
+
+1. In the dashboard, create a deploy hook for the `main` branch under Settings, Build, Deploy Hooks.
+2. Run `npx wrangler secret put DEPLOY_HOOK_URL --config cron/wrangler.toml` and paste the hook URL.
+3. Run `npx wrangler deploy --config cron/wrangler.toml`.
+
+### Manual builds
+
+To start a build now, select Retry build on the latest build in the dashboard, or send a POST request to the deploy hook.
+
+To publish a list with less than half the entries of the last list, add the build variable `COOKBOOK_ALLOW_SHRINK` = `1`, start a build, and then remove the variable.
+
+For the first build of a new site, add the build variable `COOKBOOK_FIRST_BUILD` = `1`, start a build, and then remove the variable. Every later build needs the published `stats.json`, because the safety rules compare against it.
 
 ## License
 

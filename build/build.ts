@@ -84,9 +84,9 @@ const MAX_LIST_BYTES = 24 << 20;
 /** A fallback copy older than this is not reused. */
 const MAX_FALLBACK_AGE_MS = 48 * 3600 * 1000;
 
-/** A GitHub Actions annotation: shows on the run's summary page. */
+/** A warning line in the build log. */
 function warn(text: string) {
-  console.log(process.env.GITHUB_ACTIONS ? `::warning::${text}` : `warning: ${text}`);
+  console.log(`warning: ${text}`);
 }
 
 /** Names never published, whatever a feed says. Same set as SafeRoom's built-in never-block list. */

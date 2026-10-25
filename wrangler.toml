@@ -1,5 +1,5 @@
 # An assets-only Worker: no script runs, so every request is a free static
-# asset request with no daily cap. The GitHub workflow builds dist/ and
+# asset request with no daily cap. Workers Builds builds dist/ and
 # deploys it.
 name = "cookbook"
 compatibility_date = "2026-10-01"
